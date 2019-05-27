@@ -1,0 +1,10 @@
+# ignore temporary files
+cookies.txt
+login.param
+temp.html
+
+# ignore Python compiled files
+*.pyc
+
+# output JSON files
+*.json

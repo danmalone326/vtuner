@@ -1,0 +1,249 @@
+#!/usr/bin/python
+import json
+import requests
+import re
+import urlparse
+import urllib
+import argparse
+import getpass
+
+debug=False
+
+argumentParser = argparse.ArgumentParser(
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    description='Yamaha vTuner Favorites Backup Manager',
+    )
+
+argumentParser.add_argument('-d','--deviceMac', help='MAC address of the device', required=True)
+argumentParser.add_argument('-e','--email', help='email of the vtuner account', required=True)
+argumentParser.add_argument('-p','--password', default=None, help='password of the vtuner account (default will prompt)')
+
+argGroup1 = argumentParser.add_mutually_exclusive_group()
+argGroup1.add_argument('-b','--backup', default=None, help='backup to filename (use - as filename to display)')
+argGroup1.add_argument('-r','--restore', default=None, help='restore from filename')
+
+
+args = argumentParser.parse_args()
+
+
+# Global session variable
+session = requests.Session()
+
+startURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/AuthLogin/SignIn.asp"
+loginURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/AuthLogin/AuthCreate.asp"
+groupListURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/BrowseStations/StartPage.asp"
+stationListURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/Favorites/BrowseFavorites.asp"
+changeDeviceURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/CheckMac/CheckMacAndSend.asp"
+removeChannelURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/Favorites/RemoveFromFavoritesGroup.asp"
+addChannelURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/Favorites/SaveFavorites.asp"
+deleteGroupURL = "http://yradio.vtuner.com/setupapp/yamaha/asp/Favorites/DeleteFavoriteGroup.asp"
+
+# Start a session. Must be done before any other call. This sets cookies vtuner is expecting.
+def vtunerStart():
+    global session
+    if debug:
+        print "vtunerStart"
+    session.get(startURL)
+    if debug:
+        print "complete"
+
+# This login provides both credentials and the device being managed. 
+# Especially required when one account has multiple devices associated.
+def vtunerDeviceLogin(username,password,deviceMac):
+    global session
+    if debug:
+        print "vtunerDeviceLogin"
+    params={}
+    params['sLoginSource'] = 'EmailLoginFormKnownMac'
+    params['sMode'] = 'EmailLoginKnownMac'
+    params['sSaveLogin'] = 'YES'
+    params['sEmailAddress'] = username
+    params['sPassword'] = password
+    params['sSelectedMac'] = deviceMac
+    temp = session.post(loginURL,data=params)
+    if debug:
+        print "complete"
+
+# This is a standard username/password login.
+# This allows read, but not modify of the current device.
+def vtunerLogin(username,password):
+    global session
+    if debug:
+        print "vtunerLogin"
+    params={}
+    params['lngy'] = 'eng'
+    params['image3.x'] = '11'
+    params['image3.y'] = '11'
+    params['sEmailAddress'] = username
+    params['sPassword'] = password
+    parameters = urllib.urlencode(params)
+    temp = session.get(loginURL+"?"+parameters)
+    if debug:
+        print "complete"
+
+# This changes the device for read-only mode.
+def vtunerChangeDevice(deviceMac):
+    global session
+    if debug:
+        print "vtunerLogin"
+    params={}
+    params['SetupType'] = 'BASIC'
+    params['image2.x'] = '8'
+    params['image2.y'] = '11'
+    params['sBigMac'] = deviceMac
+    parameters = urllib.urlencode(params)
+    temp = session.get(changeDeviceURL+"?"+parameters)
+    if debug:
+        print "complete"
+
+# Scrape the list of groups from the HTML
+def vtunerGroupList():
+    global session
+    if debug:
+        print "vtunerGroupList"
+    params={}
+    params['sSpot'] = 'sSpotD'
+    params['lngy'] = 'eng'
+    params['sMsg'] = 'PREMIUM'
+    parameters = urllib.urlencode(params)
+    c = session.get(groupListURL+"?"+parameters).content
+        
+    groups = []
+    for line in c.splitlines():
+        searchObj = re.search( r'(BrowseFavorites[^\"]*)', line, re.M|re.I)
+        if searchObj:
+            parsed = urlparse.urlparse(searchObj.group(1))
+            group = urlparse.parse_qs(parsed.query)['sFavoriteGroupName']
+            groups.append(group[0])
+    
+    if debug:
+        print "complete"
+    return list(set(groups))
+
+# Scrape the list of channels from the HTML
+def vtunerStationList(group):
+    global session
+    if debug:
+        print "vtunerStationList"
+    params={}
+    params['sFavoriteGroupName'] = group
+    parameters = urllib.urlencode(params)
+    c = session.get(stationListURL+"?"+parameters).content
+        
+    stations = []
+    for line in c.splitlines():
+        searchObj = re.search( r'(RemoveFromFavoritesGroup[^\"]*)', line, re.M|re.I)
+        if searchObj:
+            parsed = urlparse.urlparse(searchObj.group(1))
+            station={}
+            station['id'] = urlparse.parse_qs(parsed.query)['id'][0]
+            station['sStationName'] = urlparse.parse_qs(parsed.query)['sStationName'][0]
+            stations.append(station)
+    
+    if debug:
+        print "complete"
+    return stations
+
+# Remove a channel from a given group.
+def vtunerRemoveChannel(group,id,name):
+    global session
+    if debug:
+        print "vtunerRemoveChannel"
+    params={}
+    params['sFavoriteGroupName'] = group
+    params['id'] = id
+    params['sStationName'] = name
+    parameters = urllib.urlencode(params)
+    temp = session.get(removeChannelURL+"?"+parameters)
+    if debug:
+        print "complete"
+
+# Add a channel to a group
+def vtunerAddChannel(group,id,name):
+    global session
+    if debug:
+        print "vtunerAddChannel"
+    params={}
+    params['sFaveGroupNameFromSel'] = group
+    params['sFaveGroupName'] = ""
+    params['id'] = id
+    params['sStationName'] = name
+    params['x'] = 20
+    params['y'] = 10
+    temp = session.post(addChannelURL,data=params)
+    if debug:
+        print "complete"
+
+# Deletes a group. Group does not need to be empty.
+def vtunerDeleteGroup(group):
+    global session
+    if debug:
+        print "vtunerDeleteGroup"
+    params={}
+    params['sFavoriteGroupName'] = group
+    parameters = urllib.urlencode(params)
+    temp = session.get(deleteGroupURL+"?"+parameters)
+    if debug:
+        print "complete"
+
+# Returns a JSON for a device with all the groups and channels
+def getDeviceInfo(deviceMac):
+    global session
+    deviceInfo={}
+    deviceInfo['deviceMac']=deviceMac
+    deviceInfo['favorites']={}
+    groupList = vtunerGroupList()
+    for fav in groupList:
+        deviceInfo['favorites'][fav] = vtunerStationList(fav)
+    return deviceInfo
+
+# Pretty JSON Formatter
+def formatJSON(data):
+    return json.dumps(data, sort_keys=True, indent=4, separators=(',', ': '))
+
+# Display device info to screen
+def dumpDeviceInfo(deviceInfo):
+    print formatJSON(deviceInfo)
+
+# Do the changes needed to make the current device look like the target device.
+# This works, but could be made more efficient.
+def modifyDevice(currentDeviceInfo,targetDeviceInfo):
+    for group in (list(set(currentDeviceInfo['favorites'])-set(targetDeviceInfo['favorites']))):
+        vtunerDeleteGroup(group)
+        
+    for group in (targetDeviceInfo['favorites']):
+        vtunerDeleteGroup(group)
+        for channel in (targetDeviceInfo['favorites'][group]):
+            vtunerAddChannel(group,channel['id'],channel['sStationName'])
+
+
+######
+# MAIN
+######
+vtunerStart()
+
+deviceMac = args.deviceMac
+email = args.email
+
+# Prompt for password if not given
+if (args.password is None):
+    # Prompt for password
+    password = getpass.getpass()
+else:
+    password = args.password
+
+vtunerDeviceLogin(email,password,deviceMac)
+
+deviceInfo=getDeviceInfo(deviceMac)
+
+if (args.backup is not None):
+    if (args.backup == "-"):
+        dumpDeviceInfo(deviceInfo)
+    else:
+        with open(args.backup, 'w') as outfile:  
+            json.dump(deviceInfo, outfile)
+
+if (args.restore is not None):
+    with open(args.restore) as infile:
+        targetDeviceInfo = json.load(infile)
+    modifyDevice(deviceInfo,targetDeviceInfo)
